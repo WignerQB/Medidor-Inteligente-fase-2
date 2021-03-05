@@ -1,9 +1,6 @@
 /*
-  *Versao 1 do braço principal
-  *Tem as mesmas alteraçoes que a versao 7 do braço 1
-  *Os valores de kWh dos horários de ponta, fora de ponta e intermediários estao sendo salvos no cartao e SD e estao sendo carregados para o programa quando este se reinicia
-  *Dados salvos de 10 em 10 segundos
-  *Leitura polifásica
+  *Versao 2 do braço principal
+  *O medidor ler a EEPROM para ver quantas fazes lerá
    
    Pinagem do módulo SD na ESP32
    CS: D5
@@ -21,7 +18,9 @@
 #include <driver/adc.h>
 #include "time.h"
 #include <SPI.h>
+#include <EEPROM.h>
 
+#define EEPROM_SIZE 1
 #define SD_CS 5
 #define ADC_BITS    10
 #define ADC_COUNTS  (1<<ADC_BITS)
@@ -87,7 +86,7 @@ int blue = 33, green = 32, LedDeErro = 2, ErroNoPlanejamento = 0;
    blue -> indica se conseguiu gravar no SD card
 */
 int Vetor_Leitura_kWh[500], Agrupar_kWh = 0;
-int i = 0 , j, caseTR = 0, NumFases, sair = 0, LerSerial = -1;
+int i = 0 , j, caseTR = 0, NumFases;
 
 enum ENUM {
   f_medicao,
@@ -289,18 +288,12 @@ void SD_config() {
 void setup () {
   Serial.begin(57600);
   Wire.begin();
+  EEPROM.begin(EEPROM_SIZE);
   adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_DB_11);
   analogReadResolution(10);
   Serial.println("\n\nDigite o número de fases(1,2 ou 3) que o medidor inteligente terá de ler!");
-  while(sair == 0){
-    if(Serial.available()>1){
-      LerSerial = Serial.read();
-    }
-    if(LerSerial>=49 && LerSerial <=51){
-      NumFases = (int)LerSerial - 48;
-      sair = 1;
-    }
-  }
+  NumFases = EEPROM.read(0);
+  Serial.println("O medidor lerá " + String(NumFases) + " fases");
 
   emon_f1.voltage(pinSensorV_f1, vCalibration_f1, phase_shift_f1); // Voltage: input pin f1, calibration f1, phase_shift_f1
   emon_f1.current(pinSensorI_f1, currCalibration_f1); // Current: input pin f1, calibration f1.
