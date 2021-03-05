@@ -1,6 +1,6 @@
 /*
-  *Versao 1 do braço principal
-  *Tem as mesmas alteraçoes que a versao 7 do braço 1
+  *Versao 1 do braço 1
+  *Tem as mesmas alteraçoes que a versao 7 do repositório abandonado
   *Os valores de kWh dos horários de ponta, fora de ponta e intermediários estao sendo salvos no cartao e SD e estao sendo carregados para o programa quando este se reinicia
   *Dados salvos de 10 em 10 segundos
   *Leitura polifásica
