@@ -1,6 +1,12 @@
 /*
-  *Versao 2 do braço 1
-  *O medidor ler a EEPROM para ver quantas fazes lerá
+  *Versao 3 do braço 1
+  *O medidor salva na EEPROM o dia atual e verifica se houve a mudança de dia para fazer a verificacao quanto as metas
+  *Salva algumas informacoes a mais no txt
+
+
+   Dados Salvos na EEPROM:
+   Canal 0: Números de fases a ser lido
+   Canal 1: Dia Atual
    
    Pinagem do módulo SD na ESP32
    CS: D5
@@ -20,7 +26,7 @@
 #include <SPI.h>
 #include <EEPROM.h>
 
-#define EEPROM_SIZE 1
+#define EEPROM_SIZE 4
 #define SD_CS 5
 #define ADC_BITS    10
 #define ADC_COUNTS  (1<<ADC_BITS)
@@ -64,11 +70,11 @@ unsigned long timerDelay1 = 5000, timerDelay2 = 10000;
 unsigned long lastTime1 = 0, lastTime2 = 0;
 
 //Declaracao de variáveis float-------------------------------------------------
-float kWh_FP = 0, kWh_I = 0, kWh_P = 0;
-float TensaoAlimentacao_f1 = 0, FatorPotencia_f1 = 0, PotenciaAparente_f1 = 0, PotenciaReal_f1 = 0;
-float TensaoAlimentacao_f2 = 0, FatorPotencia_f2 = 0, PotenciaAparente_f2 = 0, PotenciaReal_f2 = 0;
-float TensaoAlimentacao_f3 = 0, FatorPotencia_f3 = 0, PotenciaAparente_f3 = 0, PotenciaReal_f3 = 0;
-//float ConsumoEsperado = 10.00, MetaDiaria, ConsumoDiario = 0, ConsumoTotal = 0, ValorDokWh;//Todos valores simulados
+float kWh_FP = 0, kWh_I = 0, kWh_P = 0, kWh_Total;
+float TensaoAlimentacao_f1 = 0, FatorPotencia_f1 = 0, PotenciaAparente_f1 = 0, PotenciaReal_f1 = 0;//Fase 1
+float TensaoAlimentacao_f2 = 0, FatorPotencia_f2 = 0, PotenciaAparente_f2 = 0, PotenciaReal_f2 = 0;//Fase 2
+float TensaoAlimentacao_f3 = 0, FatorPotencia_f3 = 0, PotenciaAparente_f3 = 0, PotenciaReal_f3 = 0;//Fase 3
+float MetaMensal = 10.00, MetaDiaria, ConsumoDiario = 0, ConsumoMensal = 0, Valor_do_kWh = 0.26292;//Controle das metas
 /*
  * kWh_FP: kWh referente ao consumido no horário Fora de Ponta
  * kWh_I: kWh referente ao consumido no horário Intermediário
@@ -79,13 +85,13 @@ float TensaoAlimentacao_f3 = 0, FatorPotencia_f3 = 0, PotenciaAparente_f3 = 0, P
 double Irms_f1 = 0, Irms_f2 = 0, Irms_f3 = 0;
 
 //Declaracao de variáveis int---------------------------------------------------
-int ContadorDeDias = 30, DiaAtual, flag_setup = 0;
-int blue = 33, green = 32, LedDeErro = 2, ErroNoPlanejamento = 0;
+int DiaAtual, DiasRestantes = 31;
+//int blue = 33, green = 32, LedDeErro = 2, ErroNoPlanejamento = 0;
 /*
    green -> indica se conseguiu enviar para web
    blue -> indica se conseguiu gravar no SD card
 */
-int Vetor_Leitura_kWh[500], Agrupar_kWh = 0;
+int Vetor_Leitura[500], Agrupar = 0;
 int i = 0 , j, caseTR = 0, NumFases;
 
 enum ENUM {
@@ -94,9 +100,26 @@ enum ENUM {
   printar
 };
 
-ENUM estado = f_medicao, estado_antigo;
+ENUM estado = f_medicao;
 
 //Funçoes ----------------------------------------------------------------------
+void Gerenciamento(int Dia){
+  if(Dia != DiaAtual){//Verifica se houve uma mudança de dia, indicando que o dia que estava sendo monitorado finalizou e irá iniciar um 
+                      //novo dia de monitoramento
+    if(ConsumoDiario > MetaDiaria){//Verifica se o usuário cumpriu a meta diária e caso nao tenha cumprido vê a possibilidade de o usuário
+                                   //ainda ficar dentro do consumo esperado para o fim do mês.
+      Serial.println("\n\n\nAviso: Você consumiu além da meta diária estabelecida!\n\n\n");
+      if(ConsumoMensal < MetaMensal){
+        MetaDiaria = (MetaMensal - ConsumoMensal)/DiasRestantes;//Calcula a nova meta diária com base no que o cara já consumiu e nos 
+        Serial.println("Nova meta diaria calculada: R$" + String(MetaDiaria));//dias que ainda faltam
+      }                                                          
+    }
+    //Serial.println("\n\n\nEstou salvando: " + String(DiaAtual) + "\n\n\n");
+    DiaAtual = Dia;
+    DiasRestantes--;
+    EEPROM.write(1, DiaAtual);
+  }
+}
 
 void appendFile(fs::FS &fs, const char * path, String message) {
   Serial.printf("Appending to file: %s\n", path);
@@ -148,19 +171,20 @@ void readFile(fs::FS &fs){
     return;
   }
         
-  Serial.print("Read from file: ");
+  Serial.print("Read from file: kWh_FP.txt");
   while(file_kWh_FP.available()){
-    Vetor_Leitura_kWh[i] = file_kWh_FP.read();
+    Vetor_Leitura[i] = file_kWh_FP.read();
     i = i + 1;
   }
   for (j = 0; j < i; j++){
-    Agrupar_kWh = Agrupar_kWh + (Vetor_Leitura_kWh[j] - 48) * pow(10, i - j - 1);
+    Agrupar = Agrupar + (Vetor_Leitura[j] - 48) * pow(10, i - j - 1);
   }
-  kWh_FP = float(Agrupar_kWh) / 1000000;
+  kWh_FP = float(Agrupar) / 1000000;
+  Serial.println("Catou: " + String(kWh_FP*1000000));
   i = 0;
   file_kWh_FP.close();
   //----------------------------------------------------------------------------------------------------
-  //Lendo o arquivo kWh_FP.txt--------------------------------------------------------------------------
+  //Lendo o arquivo kWh_I.txt---------------------------------------------------------------------------
   Serial.printf("Reading file: %s\n", "/kWh_I.txt");
     
   File file_kWh_I = fs.open("/kWh_I.txt");
@@ -169,19 +193,20 @@ void readFile(fs::FS &fs){
     return;
   }
         
-  Serial.print("Read from file: ");
+  Serial.print("Read from file: kWh_I.txt");
   while(file_kWh_I.available()){
-    Vetor_Leitura_kWh[i] = file_kWh_I.read();
+    Vetor_Leitura[i] = file_kWh_I.read();
     i = i + 1;
   }
   for (j = 0; j < i; j++){
-    Agrupar_kWh = Agrupar_kWh + (Vetor_Leitura_kWh[j] - 48) * pow(10, i - j - 1);
+    Agrupar = Agrupar + (Vetor_Leitura[j] - 48) * pow(10, i - j - 1);
   }
-  kWh_I = float(Agrupar_kWh) / 1000000;
+  kWh_I = float(Agrupar) / 1000000;
+  Serial.println("Catou: " + String(kWh_I*1000000));
   i = 0;
   file_kWh_I.close();
   //----------------------------------------------------------------------------------------------------
-  //Lendo o arquivo kWh_FP.txt--------------------------------------------------------------------------
+  //Lendo o arquivo kWh_P.txt---------------------------------------------------------------------------
   Serial.printf("Reading file: %s\n", "/kWh_P.txt");
     
   File file_kWh_P = fs.open("/kWh_P.txt");
@@ -190,17 +215,40 @@ void readFile(fs::FS &fs){
     return;
   }
         
-  Serial.print("Read from file: ");
+  Serial.print("Read from file: kWh_P.txt");
   while(file_kWh_P.available()){
-    Vetor_Leitura_kWh[i] = file_kWh_P.read();
+    Vetor_Leitura[i] = file_kWh_P.read();
     i = i + 1;
   }
   for (j = 0; j < i; j++){
-    Agrupar_kWh = Agrupar_kWh + (Vetor_Leitura_kWh[j] - 48) * pow(10, i - j - 1);
+    Agrupar = Agrupar + (Vetor_Leitura[j] - 48) * pow(10, i - j - 1);
   }
-  kWh_P = float(Agrupar_kWh) / 1000000;
+  kWh_P = float(Agrupar) / 1000000;
+  Serial.println("Catou: " + String(kWh_P*1000000));
   i = 0;
   file_kWh_P.close();
+  //----------------------------------------------------------------------------------------------------
+  //Lendo o arquivo MetaDiaria.txt----------------------------------------------------------------------
+  Serial.printf("Reading file: %s\n", "/MetaDiaria.txt");
+    
+  File file_MetaDiaria = fs.open("/MetaDiaria.txt");
+  if(!file_MetaDiaria){
+    Serial.println("Failed to open file for reading");
+    return;
+  }
+        
+  Serial.print("Read from file: MetaDiaria.txt");
+  while(file_MetaDiaria.available()){
+    Vetor_Leitura[i] = file_MetaDiaria.read();
+    i = i + 1;
+  }
+  for (j = 0; j < i; j++){
+    Agrupar = Agrupar + (Vetor_Leitura[j] - 48) * pow(10, i - j - 1);
+  }
+  MetaDiaria = float(Agrupar) / 100;
+  Serial.println("Catou: " + String(MetaDiaria*100));
+  i = 0;
+  file_MetaDiaria.close();
   //----------------------------------------------------------------------------------------------------
 }
 
@@ -282,6 +330,20 @@ void SD_config() {
   }
   file_kWh_P.close();
 
+  // Create a file on the SD card and write MetaDiaria
+  File file_MetaDiaria = SD.open("/MetaDiaria.txt");
+  if (!file_MetaDiaria) {
+    Serial.println("MetaDiaria doens't exist");
+    Serial.println("Creating file MetaDiaria...");
+    //Calcular a meta diaria de consumo
+    MetaDiaria = MetaMensal/31;
+    writeFile(SD, "/MetaDiaria.txt", String((int)MetaDiaria*100));
+  }
+  else {
+    Serial.println("File MetaDiaria already exists");
+  }
+  file_MetaDiaria.close();
+
   readFile(SD);
 }
 
@@ -291,10 +353,18 @@ void setup () {
   EEPROM.begin(EEPROM_SIZE);
   adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_DB_11);
   analogReadResolution(10);
-  Serial.println("\n\nDigite o número de fases(1,2 ou 3) que o medidor inteligente terá de ler!");
   NumFases = EEPROM.read(0);
-  Serial.println("O medidor lerá " + String(NumFases) + " fases");
-
+  Serial.println("\nO medidor lerá " + String(NumFases) + " fases");
+  DateTime now = myRTC.now();
+  if(EEPROM.read(1)>=1 && EEPROM.read(1)<=31){
+    DiaAtual = EEPROM.read(1);
+  }
+  else{
+    DiaAtual = now.day();
+    EEPROM.write(1, DiaAtual);
+  }
+  Serial.println("Dia Atual é " + String(DiaAtual));
+  
   emon_f1.voltage(pinSensorV_f1, vCalibration_f1, phase_shift_f1); // Voltage: input pin f1, calibration f1, phase_shift_f1
   emon_f1.current(pinSensorI_f1, currCalibration_f1); // Current: input pin f1, calibration f1.
   
@@ -311,6 +381,7 @@ void setup () {
   }
   
   SD_config();
+
 }
 
 void loop () {
@@ -365,7 +436,7 @@ void loop () {
       break;
 
     case incrementar://Nesse estado é feito o cálculo do consumo em R$ e em kWh e feito o backup dos dados
-      //Serial.println("\n\n\n" + String(millis() - lastTime2) + "\n\n\n");
+      RTCdata = String(now.year()) + "/" + String(now.month()) + "/" + String(now.day()) + "\t" + String(now.hour()) + ":" + String(now.minute()) + ":" + String(now.second());
       if ((millis() - lastTime2) >= timerDelay2) {//Horário Intermediário
         if((int(now.hour()) == 18)||(int(now.hour()) == 22)){
           kWh_I = kWh_I + ((PotenciaReal_f1 + PotenciaReal_f2 + PotenciaReal_f3) / 360) / 1000;
@@ -396,13 +467,16 @@ void loop () {
         }
         lastTime2 = millis();
       }
+      //Contabilizaçao de gastos
+      kWh_Total = kWh_FP + kWh_I + kWh_P; 
+      ConsumoDiario = kWh_Total * Valor_do_kWh;
+      Gerenciamento(now.day());
       estado = printar;
       break;
 
     case printar://Printa as informações lidas e calculadas
       if ((millis() - lastTime1) >= timerDelay1)
       {
-        RTCdata = String(now.year()) + "/" + String(now.month()) + "/" + String(now.day()) + "\t" + String(now.hour()) + ":" + String(now.minute()) + ":" + String(now.second());
         Serial.println(RTCdata);
         //Fase1
         Serial.print(" Vrms1: " + String(TensaoAlimentacao_f1) + " V     Irms_f1: " + String(Irms_f1) + " A     Potência Real1: " + String(PotenciaReal_f1));
