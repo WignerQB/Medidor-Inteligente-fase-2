@@ -1,9 +1,21 @@
 /*
-  *Versao 3 do braço 1
-  *O medidor salva na EEPROM o dia atual e verifica se houve a mudança de dia para fazer a verificacao quanto as metas
-  *Salva algumas informacoes a mais no txt
+ * Autor: José Wigner Quintino Bindacco
+  *Versao 4 do braço 1
+  *Implementaçao do calculo da Tarifa Branca;
+    *Implementaçao de um Fator de Recompença, aonde o usuário pode definir qual seria um valor interessante a ser pago a menos que o valor
+     da Tarifa Convencional se caso o usuário aderice a Tarifa Branca. (Ex.: Se o usuário gasta por mês R$150,00 com energia e ele determina
+     que o Fator de Recompensa para ele aderir a Tarifa Branca é de 90%, isso significa que será interessante para ele aderir a  TB quando 
+     consumir R$135,00 ou menos).
+  *
 
-
+   -O que o medidor consegue fazer até este ponto?
+   § Possui leitura polifásica conforme a especificacao do usuário.
+   § Salva os dados (consumo em kWh é salvo em arquivos .txt diferentes e salva um apanhado geral para efeito de estudo e análise em um 
+   arquivo .csv) em um cartao SD.
+   § Salva na EEPROM a quantidade de fases a ser lida, bem como o dia atual para conferir se houve uma mudança de dias.
+   § 
+   
+   -Informaçoes importantes sobre o código para seu funcionamento:
    Dados Salvos na EEPROM:
    Canal 0: Números de fases a ser lido
    Canal 1: Dia Atual
@@ -13,6 +25,7 @@
    SCK:D18
    MOSI:D23
    MISO:D19
+
 */
 
 #include <Wire.h>
@@ -56,15 +69,6 @@ String RTCdata, Dados_de_medicao, Dados_SD, LabelSD, Mensagem_Print;
 RTClib myRTC;
 EnergyMonitor emon_f1, emon_f2, emon_f3;
 
-//Declaracao de variáveis byte-----------------------------------------------
-byte Year;
-byte Month;
-byte Date;
-byte DoW;
-byte Hour;
-byte Minute;
-byte Second;
-
 //Declaracao de variáveis unsigned long----------------------------------------
 unsigned long timerDelay1 = 5000, timerDelay2 = 10000;
 unsigned long lastTime1 = 0, lastTime2 = 0;
@@ -74,7 +78,10 @@ float kWh_FP = 0, kWh_I = 0, kWh_P = 0, kWh_Total;
 float TensaoAlimentacao_f1 = 0, FatorPotencia_f1 = 0, PotenciaAparente_f1 = 0, PotenciaReal_f1 = 0;//Fase 1
 float TensaoAlimentacao_f2 = 0, FatorPotencia_f2 = 0, PotenciaAparente_f2 = 0, PotenciaReal_f2 = 0;//Fase 2
 float TensaoAlimentacao_f3 = 0, FatorPotencia_f3 = 0, PotenciaAparente_f3 = 0, PotenciaReal_f3 = 0;//Fase 3
-float MetaMensal = 10.00, MetaDiaria, ConsumoDiario = 0, ConsumoMensal = 0, Valor_do_kWh = 0.26292;//Controle das metas
+float MetaMensal = 10.00, MetaDiaria, ConsumoDiario = 0, ConsumoMensal = 0, Valor_kWhC = 0.26292;//Variáveis para o controle das metas
+float Valor_kWhFP, Valor_kWhP, Valor_kWhI, kz = 0.47;//Variáveis para a implementaçao do cálculo da Tarifa Branca
+float ConsumoFP = 0, ConsumoI = 0, ConsumoP = 0, ConsumoMensalTB = 0, FatordeRecompenca = 0.9;
+ 
 /*
  * kWh_FP: kWh referente ao consumido no horário Fora de Ponta
  * kWh_I: kWh referente ao consumido no horário Intermediário
@@ -92,7 +99,7 @@ int DiaAtual, DiasRestantes = 31;
    blue -> indica se conseguiu gravar no SD card
 */
 int Vetor_Leitura[500], Agrupar = 0;
-int i = 0 , j, caseTR = 0, NumFases;
+int i = 0 , j, NumFases;
 
 enum ENUM {
   f_medicao,
@@ -103,6 +110,22 @@ enum ENUM {
 ENUM estado = f_medicao;
 
 //Funçoes ----------------------------------------------------------------------
+void CalcTarifaBranca(int NumMes){
+  ConsumoMensal = (kWh_FP + kWh_I + kWh_P) * Valor_kWhC;
+  ConsumoFP = kWh_FP * Valor_kWhFP;
+  ConsumoI = kWh_I * Valor_kWhI;
+  ConsumoP = kWh_P * Valor_kWhP;
+  ConsumoMensalTB = ConsumoFP + ConsumoI + ConsumoP;
+  Serial.print("\nSeu consumo no mês " + String(NumMes) + ", segundo os parâmetros calculados da Tarifa Branca foi de 1000000*R$");
+  Serial.print(String(1000000*ConsumoMensalTB) + ". Já seu consumo pela Tarifa convencional foi de 1000000*R$" + String(1000000*ConsumoMensal));
+  if(ConsumoMensalTB < FatordeRecompenca*ConsumoMensal){
+    Serial.println("\nBaseado no seu consumo deste mês, a adesão a Tarifa Branca traz benefícios na redução dos custos de energia elétrica.");
+  }
+  else{
+    Serial.println("\nBaseado no seu consumo deste mês, a adesão a Tarifa Branca não traz benefícios na redução dos custos de energia elétrica.");
+  }
+}
+
 void Gerenciamento(int Dia){
   if(Dia != DiaAtual){//Verifica se houve uma mudança de dia, indicando que o dia que estava sendo monitorado finalizou e irá iniciar um 
                       //novo dia de monitoramento
@@ -180,7 +203,6 @@ void readFile(fs::FS &fs){
     Agrupar = Agrupar + (Vetor_Leitura[j] - 48) * pow(10, i - j - 1);
   }
   kWh_FP = float(Agrupar) / 1000000;
-  Serial.println("Catou: " + String(kWh_FP*1000000));
   i = 0;
   file_kWh_FP.close();
   //----------------------------------------------------------------------------------------------------
@@ -202,7 +224,6 @@ void readFile(fs::FS &fs){
     Agrupar = Agrupar + (Vetor_Leitura[j] - 48) * pow(10, i - j - 1);
   }
   kWh_I = float(Agrupar) / 1000000;
-  Serial.println("Catou: " + String(kWh_I*1000000));
   i = 0;
   file_kWh_I.close();
   //----------------------------------------------------------------------------------------------------
@@ -224,7 +245,6 @@ void readFile(fs::FS &fs){
     Agrupar = Agrupar + (Vetor_Leitura[j] - 48) * pow(10, i - j - 1);
   }
   kWh_P = float(Agrupar) / 1000000;
-  Serial.println("Catou: " + String(kWh_P*1000000));
   i = 0;
   file_kWh_P.close();
   //----------------------------------------------------------------------------------------------------
@@ -246,7 +266,6 @@ void readFile(fs::FS &fs){
     Agrupar = Agrupar + (Vetor_Leitura[j] - 48) * pow(10, i - j - 1);
   }
   MetaDiaria = float(Agrupar) / 100;
-  Serial.println("Catou: " + String(MetaDiaria*100));
   i = 0;
   file_MetaDiaria.close();
   //----------------------------------------------------------------------------------------------------
@@ -382,6 +401,10 @@ void setup () {
   
   SD_config();
 
+  Valor_kWhFP = kz * Valor_kWhC;
+  Valor_kWhI = Valor_kWhFP * 3;
+  Valor_kWhP = Valor_kWhFP * 5;
+  Serial.println("\n\nValor convencional do kWh " + String(Valor_kWhC) +  "\nValor kWh FP " + String(Valor_kWhFP) + "\nValor kWh I " + String(Valor_kWhI) + "\nValor kWh P " + String(Valor_kWhP));
 }
 
 void loop () {
@@ -422,7 +445,6 @@ void loop () {
         PotenciaAparente_f3 = emon_f3.apparentPower;
         FatorPotencia_f3 = emon_f3.powerFactor;
       }
-      
       
       if (PotenciaReal_f1 >= 0){
         estado = incrementar;
@@ -469,8 +491,14 @@ void loop () {
       }
       //Contabilizaçao de gastos
       kWh_Total = kWh_FP + kWh_I + kWh_P; 
-      ConsumoDiario = kWh_Total * Valor_do_kWh;
+      ConsumoDiario = kWh_Total * Valor_kWhC;
       Gerenciamento(now.day());
+//      if((now.day() == 1)&&(now.hour() == 7)&&(now.minute() <= 1)){
+//        CalcTarifaBranca(now.month())
+//      }
+      if((now.day() == 16)&&(now.hour() == 15)&&(now.minute() >= 20)){
+        CalcTarifaBranca(now.month());
+      }
       estado = printar;
       break;
 
@@ -497,9 +525,9 @@ void loop () {
         else{
           Serial.println(String(kWh_FP * 1000000));
         }
-        estado = f_medicao;
         lastTime1 = millis();
       }
+      estado = f_medicao; //Reverter(voltar para dentro do escopo)
       break;
 
     default :
