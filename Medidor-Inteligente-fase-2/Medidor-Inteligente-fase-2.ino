@@ -1,19 +1,16 @@
 /*
  * Autor: José Wigner Quintino Bindacco
-  *Versao 4 do braço 1
-  *Implementaçao do calculo da Tarifa Branca;
-    *Implementaçao de um Fator de Recompença, aonde o usuário pode definir qual seria um valor interessante a ser pago a menos que o valor
-     da Tarifa Convencional se caso o usuário aderice a Tarifa Branca. (Ex.: Se o usuário gasta por mês R$150,00 com energia e ele determina
-     que o Fator de Recompensa para ele aderir a Tarifa Branca é de 90%, isso significa que será interessante para ele aderir a  TB quando 
-     consumir R$135,00 ou menos).
-  *
+  *Versao 5 do braço 1
+  *É calculado o quanto o consumidor consome em cada faixa de horário do seu dia.
+  *É salvo esses valores no arquivo .csv
+  *Algumas outras mudanças na estrutura do código que fazem mais sentido para seu funcionamento.
 
    -O que o medidor consegue fazer até este ponto?
    § Possui leitura polifásica conforme a especificacao do usuário.
    § Salva os dados (consumo em kWh é salvo em arquivos .txt diferentes e salva um apanhado geral para efeito de estudo e análise em um 
    arquivo .csv) em um cartao SD.
    § Salva na EEPROM a quantidade de fases a ser lida, bem como o dia atual para conferir se houve uma mudança de dias.
-   § 
+   § Faz o cálculo da Tarifa Branca para o usuário avaliar se compensa mudar para a modalidade tarifaria. 
    
    -Informaçoes importantes sobre o código para seu funcionamento:
    Dados Salvos na EEPROM:
@@ -63,7 +60,7 @@
 #define phase_shift_f3 1.7
 
 //Declaracao de variáveis String --------------------------------------------
-String RTCdata, Dados_de_medicao, Dados_SD, LabelSD, Mensagem_Print;
+String RTCdata, Dados_de_medicao, Dados_SD, LabelSD, Mensagem_Print, PorcentagemConsumo;
 
 //Declaracao de variáveis de bibliotecas-------------------------------------
 RTClib myRTC;
@@ -78,9 +75,10 @@ float kWh_FP = 0, kWh_I = 0, kWh_P = 0, kWh_Total;
 float TensaoAlimentacao_f1 = 0, FatorPotencia_f1 = 0, PotenciaAparente_f1 = 0, PotenciaReal_f1 = 0;//Fase 1
 float TensaoAlimentacao_f2 = 0, FatorPotencia_f2 = 0, PotenciaAparente_f2 = 0, PotenciaReal_f2 = 0;//Fase 2
 float TensaoAlimentacao_f3 = 0, FatorPotencia_f3 = 0, PotenciaAparente_f3 = 0, PotenciaReal_f3 = 0;//Fase 3
-float MetaMensal = 10.00, MetaDiaria, ConsumoDiario = 0, ConsumoMensal = 0, Valor_kWhC = 0.26292;//Variáveis para o controle das metas
+float MetaMensal = 10.00, MetaDiaria, Consumo = 0, ConsumoDiario, ConsumoMensal = 0, Valor_kWhC = 0.26292;//Variáveis para o controle das metas
 float Valor_kWhFP, Valor_kWhP, Valor_kWhI, kz = 0.47;//Variáveis para a implementaçao do cálculo da Tarifa Branca
 float ConsumoFP = 0, ConsumoI = 0, ConsumoP = 0, ConsumoMensalTB = 0, FatordeRecompenca = 0.9;
+float PerConsumoFP = 0, PerConsumoI = 0, PerConsumoP = 0;
  
 /*
  * kWh_FP: kWh referente ao consumido no horário Fora de Ponta
@@ -92,7 +90,7 @@ float ConsumoFP = 0, ConsumoI = 0, ConsumoP = 0, ConsumoMensalTB = 0, FatordeRec
 double Irms_f1 = 0, Irms_f2 = 0, Irms_f3 = 0;
 
 //Declaracao de variáveis int---------------------------------------------------
-int DiaAtual, DiasRestantes = 31;
+int DiaAtual, DiasRestantes, DiaFimMedicao = 30;
 //int blue = 33, green = 32, LedDeErro = 2, ErroNoPlanejamento = 0;
 /*
    green -> indica se conseguiu enviar para web
@@ -129,6 +127,8 @@ void CalcTarifaBranca(int NumMes){
 void Gerenciamento(int Dia){
   if(Dia != DiaAtual){//Verifica se houve uma mudança de dia, indicando que o dia que estava sendo monitorado finalizou e irá iniciar um 
                       //novo dia de monitoramento
+    ConsumoDiario = Consumo - ConsumoMensal;
+    ConsumoMensal = Consumo;
     if(ConsumoDiario > MetaDiaria){//Verifica se o usuário cumpriu a meta diária e caso nao tenha cumprido vê a possibilidade de o usuário
                                    //ainda ficar dentro do consumo esperado para o fim do mês.
       Serial.println("\n\n\nAviso: Você consumiu além da meta diária estabelecida!\n\n\n");
@@ -139,8 +139,9 @@ void Gerenciamento(int Dia){
     }
     //Serial.println("\n\n\nEstou salvando: " + String(DiaAtual) + "\n\n\n");
     DiaAtual = Dia;
-    DiasRestantes--;
+    DiasRestantes = DiaFimMedicao - DiaAtual;
     EEPROM.write(1, DiaAtual);
+    writeFile(SD, "/ConsumoMensal.txt", String((int)(1000000*ConsumoMensal)));
   }
 }
 
@@ -269,6 +270,27 @@ void readFile(fs::FS &fs){
   i = 0;
   file_MetaDiaria.close();
   //----------------------------------------------------------------------------------------------------
+  //Lendo o arquivo ConsumoMensal.txt----------------------------------------------------------------------
+  Serial.printf("Reading file: %s\n", "/ConsumoMensal.txt");
+    
+  File fileConsumoMensal = fs.open("/ConsumoMensal.txt");
+  if(!fileConsumoMensal){
+    Serial.println("Failed to open file for reading");
+    return;
+  }
+        
+  Serial.print("Read from file: ConsumoMensal.txt");
+  while(fileConsumoMensal.available()){
+    Vetor_Leitura[i] = fileConsumoMensal.read();
+    i = i + 1;
+  }
+  for (j = 0; j < i; j++){
+    Agrupar = Agrupar + (Vetor_Leitura[j] - 48) * pow(10, i - j - 1);
+  }
+  ConsumoMensal = float(Agrupar) / 1000000;
+  i = 0;
+  fileConsumoMensal.close();
+  //----------------------------------------------------------------------------------------------------
 }
 
 void SD_config() {
@@ -302,7 +324,8 @@ void SD_config() {
   if (!file) {
     LabelSD = "Data \tHorário \tTensao Alimentacao_f1 \tIrms_f1 \tPotencia Real_f1 \tPotencia Aparente_f1 \tFator de Potencia_f1 \t" ;
     LabelSD = LabelSD + "Tensao Alimentacao_f2 \tIrms_f2 \tPotencia Real_f2 \tPotencia Aparente_f2 \tFator de Potencia_f2 \t" ;
-    LabelSD = LabelSD + "Tensao Alimentacao_f3 \tIrms_f3 \tPotencia Real_f3 \tPotencia Aparente_f3 \tFator de Potencia_f3 \tkWh Horário Fora de Ponta \tkWh Horário Intermediário \tHorário de Ponta\n" ;
+    LabelSD = LabelSD + "Tensao Alimentacao_f3 \tIrms_f3 \tPotencia Real_f3 \tPotencia Aparente_f3 \tFator de Potencia_f3 \tkWh Horário Fora de Ponta \tkWh Horário Intermediário \tHorário de Ponta \t" ;
+    LabelSD = LabelSD + "Porcentagem de consumo no horário Fora de Ponta \tPorcentagem de consumo no horário Intermediário \tPorcentagem de consumo no horário de Ponta \n";
     Serial.println("File doens't exist");
     Serial.println("Creating file...");
     writeFile(SD, "/ICDataLogger.csv", LabelSD);
@@ -363,6 +386,18 @@ void SD_config() {
   }
   file_MetaDiaria.close();
 
+  // Create a file on the SD card and write ConsumoMensal
+  File fileConsumoMensal = SD.open("/ConsumoMensal.txt");
+  if (!fileConsumoMensal) {
+    Serial.println("ConsumoMensal.txt doens't exist");
+    Serial.println("Creating file ConsumoMensal.txt...");
+    writeFile(SD, "/ConsumoMensal.txt", " ");
+  }
+  else {
+    Serial.println("File ConsumoMensal.txt already exists");
+  }
+  fileConsumoMensal.close();
+
   readFile(SD);
 }
 
@@ -383,6 +418,7 @@ void setup () {
     EEPROM.write(1, DiaAtual);
   }
   Serial.println("Dia Atual é " + String(DiaAtual));
+  DiasRestantes = DiaFimMedicao - DiaAtual;
   
   emon_f1.voltage(pinSensorV_f1, vCalibration_f1, phase_shift_f1); // Voltage: input pin f1, calibration f1, phase_shift_f1
   emon_f1.current(pinSensorI_f1, currCalibration_f1); // Current: input pin f1, calibration f1.
@@ -459,14 +495,13 @@ void loop () {
 
     case incrementar://Nesse estado é feito o cálculo do consumo em R$ e em kWh e feito o backup dos dados
       RTCdata = String(now.year()) + "/" + String(now.month()) + "/" + String(now.day()) + "\t" + String(now.hour()) + ":" + String(now.minute()) + ":" + String(now.second());
-      if ((millis() - lastTime2) >= timerDelay2) {//Horário Intermediário
-        if((int(now.hour()) == 18)||(int(now.hour()) == 22)){
+      if ((millis() - lastTime2) >= timerDelay2) {
+        if((int(now.hour()) == 18)||(int(now.hour()) == 22)){//Horário Intermediário
           kWh_I = kWh_I + ((PotenciaReal_f1 + PotenciaReal_f2 + PotenciaReal_f3) / 360) / 1000;
           Dados_de_medicao = String(TensaoAlimentacao_f1) + "\t"  + String(Irms_f1) + "\t"  + String(PotenciaReal_f1) + "\t"  + String(PotenciaAparente_f1) + "\t"  + String(FatorPotencia_f1) + "\t";
           Dados_de_medicao = Dados_de_medicao + String(TensaoAlimentacao_f2) + "\t"  + String(Irms_f2) + "\t"  + String(PotenciaReal_f2) + "\t"  + String(PotenciaAparente_f2) + "\t"  + String(FatorPotencia_f2) + "\t";
           Dados_de_medicao = Dados_de_medicao + String(TensaoAlimentacao_f3) + "\t"  + String(Irms_f3) + "\t"  + String(PotenciaReal_f3) + "\t"  + String(PotenciaAparente_f3) + "\t"  + String(FatorPotencia_f3) + "\t" + String(kWh_FP* 1000000) + "\t" + String(kWh_I* 1000000) + "\t" + String(kWh_P* 1000000);
           Dados_SD = RTCdata + "\t" + Dados_de_medicao + "\n";
-          appendFile(SD, "/ICDataLogger.csv", Dados_SD);
           writeFile(SD, "/kWh_I.txt", String((int)(kWh_I*1000000)));
         }
         else if((int(now.hour()) >= 19)&&(int(now.hour()) <= 21)){//Horário de Ponta
@@ -475,23 +510,29 @@ void loop () {
           Dados_de_medicao = Dados_de_medicao + String(TensaoAlimentacao_f2) + "\t"  + String(Irms_f2) + "\t"  + String(PotenciaReal_f2) + "\t"  + String(PotenciaAparente_f2) + "\t"  + String(FatorPotencia_f2) + "\t";
           Dados_de_medicao = Dados_de_medicao + String(TensaoAlimentacao_f3) + "\t"  + String(Irms_f3) + "\t"  + String(PotenciaReal_f3) + "\t"  + String(PotenciaAparente_f3) + "\t"  + String(FatorPotencia_f3) + "\t" + String(kWh_FP* 1000000) + "\t" + String(kWh_I* 1000000) + "\t" + String(kWh_P* 1000000);
           Dados_SD = RTCdata + "\t" + Dados_de_medicao + "\n";
-          appendFile(SD, "/ICDataLogger.csv", Dados_SD);
           writeFile(SD, "/kWh_P.txt", String((int)(kWh_P*1000000)));
         }
-        else{
+        else{//Horário Fora de Ponta
           kWh_FP = kWh_FP + ((PotenciaReal_f1 + PotenciaReal_f2 + PotenciaReal_f3) / 360) / 1000;  
           Dados_de_medicao = String(TensaoAlimentacao_f1) + "\t"  + String(Irms_f1) + "\t"  + String(PotenciaReal_f1) + "\t"  + String(PotenciaAparente_f1) + "\t"  + String(FatorPotencia_f1) + "\t";
           Dados_de_medicao = Dados_de_medicao + String(TensaoAlimentacao_f2) + "\t"  + String(Irms_f2) + "\t"  + String(PotenciaReal_f2) + "\t"  + String(PotenciaAparente_f2) + "\t"  + String(FatorPotencia_f2) + "\t";
           Dados_de_medicao = Dados_de_medicao + String(TensaoAlimentacao_f3) + "\t"  + String(Irms_f3) + "\t"  + String(PotenciaReal_f3) + "\t"  + String(PotenciaAparente_f3) + "\t"  + String(FatorPotencia_f3) + "\t" + String(kWh_FP* 1000000) + "\t" + String(kWh_I* 1000000) + "\t" + String(kWh_P* 1000000);
           Dados_SD = RTCdata + "\t" + Dados_de_medicao + "\n";
-          appendFile(SD, "/ICDataLogger.csv", Dados_SD);
           writeFile(SD, "/kWh_FP.txt", String((int)(kWh_FP*1000000)));
         }
         lastTime2 = millis();
       }
       //Contabilizaçao de gastos
       kWh_Total = kWh_FP + kWh_I + kWh_P; 
-      ConsumoDiario = kWh_Total * Valor_kWhC;
+      PerConsumoFP = kWh_FP/kWh_Total;
+      PerConsumoI = kWh_I/kWh_Total;
+      PerConsumoP = kWh_P/kWh_Total;
+
+      PorcentagemConsumo = String((int)(100*PerConsumoFP)) + "\t" + String((int)(100*PerConsumoI)) + "\t" + String((int)(100*PerConsumoP));
+      Dados_SD = RTCdata + "\t" + Dados_de_medicao + "\t" + PorcentagemConsumo + "\n";
+      appendFile(SD, "/ICDataLogger.csv", Dados_SD);
+      
+      Consumo = kWh_Total * Valor_kWhC;
       Gerenciamento(now.day());
 //      if((now.day() == 1)&&(now.hour() == 7)&&(now.minute() <= 1)){
 //        CalcTarifaBranca(now.month())
